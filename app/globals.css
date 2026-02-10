@@ -1,26 +1,411 @@
-@import "tailwindcss";
-
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Dark, clean, energy-company vibe. Swap these with exact Jupiter hexes if you grab them in DevTools. */
+  --jp-bg: #0b0f14;
+  --jp-surface: #121a22;
+  --jp-surface-2: #0f1620;
+  --jp-text: #f5f7fa;
+  --jp-muted: #a7b0bb;
+  --jp-border: rgba(255, 255, 255, 0.12);
+  --jp-accent: #f0c04a;
+  --jp-danger: #ff4d4f;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  background: 
+    var(--jp-bg);
+  color: var(--jp-text);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
+
+a {
+  color: inherit;
+}
+
+/* Layout */
+.container {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 22px 18px 40px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0 18px;
+  border-bottom: 1px solid var(--jp-border);
+  margin-bottom: 18px;
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.brandSubtitle {
+  color: var(--jp-muted);
+  font-size: 14px;
+  letter-spacing: 0.2px;
+}
+
+.h1 {
+  font-size: 22px;
+  margin: 10px 0 6px;
+}
+
+.subtext {
+  margin: 0 0 16px;
+  color: var(--jp-muted);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* Header row (logo + title) */
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brandText {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.brandTitle {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+
+/* Controls */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: var(--jp-text);
+  font-size: 14px;
+}
+
+.input {
+  background: var(--jp-surface);
+  border: 1px solid var(--jp-border);
+  color: var(--jp-text);
+  border-radius: 10px;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.input:focus {
+  border-color: rgba(240, 192, 74, 0.5);
+  box-shadow: 0 0 0 3px rgba(240, 192, 74, 0.12);
+}
+
+/* Pills */
+.badge {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--jp-border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--jp-muted);
+}
+
+.badgeLoading {
+  color: var(--jp-text);
+  border-color: rgba(240, 192, 74, 0.25);
+}
+
+.badgeError {
+  color: var(--jp-danger);
+  border-color: rgba(255, 77, 79, 0.35);
+  background: rgba(255, 77, 79, 0.08);
+}
+
+/* Surfaces */
+.surface {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 40%),
+    var(--jp-surface);
+  border: 1px solid var(--jp-border);
+  border-radius: 14px;
+  padding: 10px;
+}
+
+.sectionTitle {
+  font-size: 14px;
+  margin: 18px 0 10px;
+  color: var(--jp-text);
+  letter-spacing: 0.2px;
+}
+
+/* Stats grid */
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 14px 0 12px;
+}
+
+@media (max-width: 900px) {
+  .statsGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.statCard {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 40%),
+    var(--jp-surface);
+  border: 1px solid var(--jp-border);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.statLabel {
+  color: var(--jp-text);
+  font-size: 13px;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+
+.statHint {
+  color: var(--jp-muted);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.statValueRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--jp-muted);
+  font-size: 13px;
+}
+
+.statValueRow:first-of-type {
+  border-top: none;
+}
+
+.num {
+  color: var(--jp-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chart wrapper */
+.chartSurface {
+  margin-top: 10px;
+}
+
+.surfaceHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 6px 10px;
+}
+
+.surfaceTitle {
+  font-weight: 650;
+  font-size: 14px;
+  color: var(--jp-text);
+}
+
+.surfaceSub {
+  font-size: 12px;
+  color: var(--jp-muted);
+}
+
+.chartWrap {
+  height: 300px;
+}
+
+/* Table */
+.tableWrap {
+  max-height: 360px;
+  overflow: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.th {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--jp-border);
+  font-size: 12px;
+  color: var(--jp-muted);
+  position: sticky;
+  top: 0;
+  background: var(--jp-surface-2);
+}
+
+.thRight {
+  text-align: right;
+}
+
+.td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+}
+
+.tdRight {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Footer */
+.footer {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px solid var(--jp-border);
+  color: var(--jp-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.dateRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dateRowLabel {
+  font-size: 13px;
+  color: var(--jp-muted);
+}
+
+.dateBubbles {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dateBubble {
+  cursor: pointer;
+  border: 1px solid var(--jp-border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--jp-text);
+  border-radius: 999px;
+  padding: 10px 14px;
+  min-width: 92px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.dateBubble:hover {
+  transform: translateY(-1px);
+  border-color: rgba(240, 192, 74, 0.35);
+}
+
+.dateBubble:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(240, 192, 74, 0.14);
+}
+
+.dateBubbleActive {
+  background: rgba(240, 192, 74, 0.12);
+  border-color: rgba(240, 192, 74, 0.55);
+}
+
+.dateDow {
+  font-size: 12px;
+  color: var(--jp-muted);
+  letter-spacing: 0.2px;
+}
+
+.dateMd {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tipIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid var(--jp-border);
+  color: var(--jp-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+  user-select: none;
+}
+
+.tipIcon:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(240, 192, 74, 0.14);
+  border-color: rgba(240, 192, 74, 0.35);
+}
+
+.tipBubble {
+  position: absolute;
+  left: 0;
+  top: 22px;
+  width: 260px;
+  max-width: 70vw;
+  padding: 10px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--jp-border);
+  background: var(--jp-surface-2);
+  color: var(--jp-text);
+  font-size: 12px;
+  line-height: 1.35;
+  z-index: 50;
+
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+}
+
+.tip:hover .tipBubble,
+.tip:focus-within .tipBubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.badgeColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+
+

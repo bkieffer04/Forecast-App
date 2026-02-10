@@ -4,6 +4,57 @@ function slotIndex(d: Date) {
   return d.getHours() * 4 + Math.floor(d.getMinutes() / 15); // 0..95
 }
 
+export function mae(actual: number[], pred: number[]) {
+  const n = Math.min(actual.length, pred.length);
+  if (n === 0) return NaN;
+  let s = 0;
+  for (let i = 0; i < n; i++) s += Math.abs(actual[i] - pred[i]);
+  return s / n;
+}
+
+export function mape(actual: number[], pred: number[]) {
+  const n = Math.min(actual.length, pred.length);
+  if (n === 0) return null;
+
+  let s = 0;
+  let c = 0;
+  for (let i = 0; i < n; i++) {
+    const a = actual[i];
+    if (a === 0) continue;
+    s += Math.abs((a - pred[i]) / a);
+    c++;
+  }
+  return c ? (s / c) * 100 : null;
+}
+
+export function dailyStats(values: number[]) {
+  if (values.length === 0) {
+    return { min: NaN, max: NaN, avg: NaN, std: NaN };
+  }
+
+  let min = Infinity;
+  let max = -Infinity;
+  let sum = 0;
+
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  }
+  const avg = sum / values.length;
+
+  // population std dev
+  let varSum = 0;
+  for (const v of values) {
+    const d = v - avg;
+    varSum += d * d;
+  }
+  const std = Math.sqrt(varSum / values.length);
+
+  return { min, max, avg, std };
+}
+
+
 export function buildSeasonalForecast(
   targetDayStart: Date,
   history: { ts: Date; value: number }[],
@@ -43,19 +94,3 @@ export function buildSeasonalForecast(
   return points;
 }
 
-export function mae(actual: number[], pred: number[]) {
-  let s = 0;
-  for (let i = 0; i < actual.length; i++) s += Math.abs(actual[i] - pred[i]);
-  return s / actual.length;
-}
-
-export function mape(actual: number[], pred: number[]) {
-  let s = 0;
-  let n = 0;
-  for (let i = 0; i < actual.length; i++) {
-    if (actual[i] === 0) continue;
-    s += Math.abs((actual[i] - pred[i]) / actual[i]);
-    n++;
-  }
-  return n ? (s / n) * 100 : null;
-}
