@@ -1,16 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from "recharts";
+import React, { useEffect, useMemo, useState } from "react";
+import { LineChart, Line, XAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 type ApiResp = {
   settlementPoint: "HB_WEST";
@@ -37,6 +29,8 @@ type ApiResp = {
   };
 };
 
+type ApiError = { error?: string };
+
 function addDays(d: Date, days: number) {
   const x = new Date(d);
   x.setDate(x.getDate() + days);
@@ -45,23 +39,11 @@ function addDays(d: Date, days: number) {
 }
 
 function dayLabel(d: Date) {
-  return d.toLocaleDateString([], { weekday: "short" }); // Mon, Tue...
+  return d.toLocaleDateString([], { weekday: "short" });
 }
 
 function monthDay(d: Date) {
-  return d.toLocaleDateString([], { month: "short", day: "numeric" }); // Feb 10
-}
-
-const fmt2 = (v: number | null | undefined) =>
-  typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : "—";
-
-
-function parseYmd(date: string) {
-  const [y, m, d] = date.split("-").map(Number);
-  if (!y || !m || !d) return null;
-  const dt = new Date(y, m - 1, d);
-  dt.setHours(0, 0, 0, 0);
-  return dt;
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function InfoTip({ text }: { text: string }) {
@@ -70,11 +52,41 @@ function InfoTip({ text }: { text: string }) {
       <span className="tipIcon" aria-label="Info" role="img" tabIndex={0}>
         ⓘ
       </span>
-      <span className="tipBubble" role="tooltip">{text}</span>
+      <span className="tipBubble" role="tooltip">
+        {text}
+      </span>
     </span>
   );
 }
 
+type StatRow = {
+  label: React.ReactNode;
+  value: React.ReactNode;
+};
+
+function StatCard({
+  title,
+  hint,
+  rows,
+}: {
+  title: string;
+  hint?: React.ReactNode;
+  rows: StatRow[];
+}) {
+  return (
+    <div className="statCard">
+      <div className="statLabel">{title}</div>
+      {hint ? <div className="statHint">{hint}</div> : null}
+
+      {rows.map((r, i) => (
+        <div className="statValueRow" key={i}>
+          <span>{r.label}</span>
+          <span className="num">{r.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function ymd(d: Date) {
   const yyyy = d.getFullYear();
@@ -98,26 +110,17 @@ export default function Page() {
   const [date, setDate] = useState(ymd(today));
   const [data, setData] = useState<ApiResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
 
-  const days = useMemo(() => {
-  return Array.from({ length: 7 }, (_, i) => addDays(today, i));
-}, [today]);
+  const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(today, i)), [today]);
 
-  const selected = useMemo(() => parseYmd(date), [date]);
-  
   const isSmall = typeof window !== "undefined" && window.innerWidth < 640;
-
-
 
   useEffect(() => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
-
     let cancelled = false;
 
     (async () => {
-      setLoading(true);
       setErr(null);
       try {
         const resp = await fetch(`/api/forecast?date=${date}`, {
@@ -125,16 +128,30 @@ export default function Page() {
           cache: "no-store",
         });
 
-        const json = await resp.json();
-        if (!resp.ok) throw new Error(json.error ?? "Request failed");
-        if (!cancelled) setData(json);
-      } catch (e: any) {
+        const json: unknown = await resp.json();
+
+        if (!resp.ok) {
+          const msg =
+            typeof json === "object" && json !== null && "error" in json
+              ? String((json as ApiError).error ?? "Request failed")
+              : "Request failed";
+          throw new Error(msg);
+        }
+
+        // At this point, we expect ApiResp.
+        if (!cancelled) setData(json as ApiResp);
+      } catch (e: unknown) {
         if (!cancelled) {
-          setErr(e.name === "AbortError" ? "Request timed out" : (e.message ?? String(e)));
+          if (e instanceof DOMException && e.name === "AbortError") {
+            setErr("Request timed out");
+          } else if (e instanceof Error) {
+            setErr(e.message);
+          } else {
+            setErr("Unknown error");
+          }
         }
       } finally {
         clearTimeout(timeout);
-        if (!cancelled) setLoading(false);
       }
     })();
 
@@ -145,12 +162,6 @@ export default function Page() {
     };
   }, [date]);
 
-  const min = ymd(today);
-  const maxD = new Date(today);
-  maxD.setDate(maxD.getDate() + 7);
-  const max = ymd(maxD);
-
-  // Align actuals by index (good enough for demo); we can align by interval later if needed.
   const chartData = (data?.forecast ?? []).map((p, i) => {
     const actual = data?.actuals?.points?.[i];
     return {
@@ -182,101 +193,101 @@ export default function Page() {
 
       <div className="controls">
         <div className="dateRow">
-  <div className="dateRowLabel">Date (next 7 days)</div>
-  <div className="dateBubbles" role="tablist" aria-label="Select date">
-    {days.map((d) => {
-      const value = ymd(d);
-      const active = value === date;
+          <div className="dateRowLabel">Date (next 7 days)</div>
+          <div className="dateBubbles" role="tablist" aria-label="Select date">
+            {days.map((d) => {
+              const value = ymd(d);
+              const active = value === date;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  className={`dateBubble ${active ? "dateBubbleActive" : ""}`}
+                  onClick={() => setDate(value)}
+                  aria-pressed={active}
+                  title={value}
+                >
+                  <div className="dateDow">{dayLabel(d)}</div>
+                  <div className="dateMd">{monthDay(d)}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
-      return (
-        <button
-          key={value}
-          type="button"
-          className={`dateBubble ${active ? "dateBubbleActive" : ""}`}
-          onClick={() => setDate(value)}
-          aria-pressed={active}
-          title={value}
-        >
-          <div className="dateDow">{dayLabel(d)}</div>
-          <div className="dateMd">{monthDay(d)}</div>
-        </button>
-      );
-    })}
-  </div>
-</div>
-<div className="badgeColumn">
-  {err && <span className="badge badgeError">{err}</span>}
-  <span className="badge">Region: HB_WEST</span>
-  {data?.dataMode && <span className="badge">Mode: {data.dataMode}</span>}
-</div>
-
-       
+        <div className="badgeColumn">
+          {err && <span className="badge badgeError">{err}</span>}
+          <span className="badge">Region: HB_WEST</span>
+          {data?.dataMode && <span className="badge">Mode: {data.dataMode}</span>}
+        </div>
       </div>
 
       {data && (
         <>
           <div className="statsGrid">
-            <div className="statCard">
-              <div className="statLabel">Forecast stats</div>
-              <div className="statValueRow">
-                <span>Min</span><span className="num">{fmt(data.stats.forecast.min)}</span>
-              </div>
-              <div className="statValueRow">
-                <span>Max</span><span className="num">{fmt(data.stats.forecast.max)}</span>
-              </div>
-              <div className="statValueRow">
-                <span>Avg</span><span className="num">{fmt(data.stats.forecast.avg)}</span>
-              </div>
-              <div className="statValueRow">
-                <span>
-                Std <InfoTip text="Standard deviation: how much the values typically vary from the average. Higher = more spread/volatility." />
-              </span>
-              <span className="num">{fmt(data.stats.forecast.std)}</span>
-              </div>
+            <StatCard
+              title="Forecast stats"
+              hint={`${data.date} • 96 points`}
+              rows={[
+                { label: "Min", value: fmt(data.stats.forecast.min) },
+                { label: "Max", value: fmt(data.stats.forecast.max) },
+                { label: "Avg", value: fmt(data.stats.forecast.avg) },
+                {
+                  label: (
+                    <>
+                      Std{" "}
+                      <InfoTip text="Standard deviation: how much the values typically vary from the average. Higher = more spread/volatility." />
+                    </>
+                  ),
+                  value: fmt(data.stats.forecast.std),
+                },
+              ]}
+            />
 
-            </div>
+            <StatCard
+              title="Actuals"
+              hint={`${data.actuals.date} • ${data.backtest.actualCount} points`}
+              rows={[
+                { label: "Min", value: fmt(data.stats.actuals.min) },
+                { label: "Max", value: fmt(data.stats.actuals.max) },
+                { label: "Avg", value: fmt(data.stats.actuals.avg) },
+                {
+                  label: (
+                    <>
+                      Std{" "}
+                      <InfoTip text="Standard deviation: typical variation from the average. This helps describe volatility." />
+                    </>
+                  ),
+                  value: fmt(data.stats.actuals.std),
+                },
+              ]}
+            />
 
-            <div className="statCard">
-              <div className="statLabel">Actuals</div>
-              <div className="statHint">{data.actuals.date} • {data.backtest.actualCount} points</div>
-              <div className="statValueRow">
-                <span>Min</span><span className="num">{fmt(data.stats.actuals.min)}</span>
-              </div>
-              <div className="statValueRow">
-                <span>Max</span><span className="num">{fmt(data.stats.actuals.max)}</span>
-              </div>
-              <div className="statValueRow">
-                <span>Avg</span><span className="num">{fmt(data.stats.actuals.avg)}</span>
-              </div>
-              <div className="statValueRow">
-                <span>
-                  Std <InfoTip text="Standard deviation: typical variation from the average. This helps describe volatility." />
-                </span>
-                <span className="num">{fmt(data.stats.actuals.std)}</span>
-              </div>
-              
-
-            </div>
-
-            <div className="statCard">
-              <div className="statLabel">Backtest</div>
-              <div className="statHint">{data.backtest.date}</div>
-              <div className="statValueRow">
-                <span>
-                  MAE <InfoTip text="Mean Absolute Error: average absolute difference between forecast and actual. Lower is better." />
-                </span>
-                <span className="num">{fmt(data.backtest.mae)}</span>
-              </div>
-              <div className="statValueRow">
-                <span>
-                  MAPE <InfoTip text="Mean Absolute Percentage Error: average percent error. Lower is better. Can be misleading when actuals are near zero." />
-                </span>
-                <span className="num">
-                  {data.backtest.mape == null ? "n/a" : `${data.backtest.mape.toFixed(2)}%`}
-                </span>
-              </div>
-              <div className="statHint">Actuals vs seasonal baseline</div>
-            </div>
+            <StatCard
+              title="Backtest"
+              hint={data.backtest.date}
+              rows={[
+                {
+                  label: (
+                    <>
+                      MAE{" "}
+                      <InfoTip text="Mean Absolute Error: average absolute difference between forecast and actual. Lower is better." />
+                    </>
+                  ),
+                  value: fmt(data.backtest.mae),
+                },
+                {
+                  label: (
+                    <>
+                      MAPE{" "}
+                      <InfoTip text="Mean Absolute Percentage Error: average percent error. Lower is better. Can be misleading when actuals are near zero." />
+                    </>
+                  ),
+                  value: data.backtest.mape == null ? "n/a" : `${data.backtest.mape.toFixed(2)}%`,
+                },
+                { label: "Notes", value: "Actuals vs seasonal baseline" },
+              ]}
+            />
           </div>
 
           <div className="surface chartSurface">
@@ -285,7 +296,6 @@ export default function Page() {
               <div className="surfaceSub">
                 Actuals are the same weekday from last week ({data.actuals.date}).
               </div>
-
             </div>
 
             <div className="chartWrap">
@@ -296,8 +306,11 @@ export default function Page() {
                     interval={isSmall ? 23 : "preserveStartEnd"}
                     minTickGap={isSmall ? 48 : 32}
                   />
-                  
-                  <Tooltip formatter={(v) => (typeof v === "number" ? v.toFixed(2) : String(v))}/>
+                  <Tooltip
+                    formatter={(v: unknown) =>
+                      typeof v === "number" ? v.toFixed(2) : String(v)
+                    }
+                  />
                   <Legend />
                   <Line type="monotone" dataKey="forecast" dot={false} stroke="var(--jp-accent)" />
                   <Line type="monotone" dataKey="actual" dot={false} stroke="rgba(74,163,255,0.9)" />
@@ -307,6 +320,7 @@ export default function Page() {
           </div>
 
           <h2 className="sectionTitle">96 intervals</h2>
+
           <div className="surface tableWrap">
             <table className="table">
               <thead>
@@ -328,9 +342,7 @@ export default function Page() {
         </>
       )}
 
-      <footer className="footer">
-        Branding assets belong to Jupiter Power; used for interview demo.
-      </footer>
+      <footer className="footer">Branding assets belong to Jupiter Power; used for interview demo.</footer>
     </main>
   );
 }

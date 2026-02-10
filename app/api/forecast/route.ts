@@ -1,27 +1,37 @@
-// src/app/api/forecast/route.ts
+// app/api/forecast/route.ts
 import { NextResponse } from "next/server";
 import { ercotGetJson } from "@/lib/ercot";
 import { buildSeasonalForecast, dailyStats, mae, mape } from "@/lib/forecast";
 
-const SPP_15MIN_ENDPOINT = "/np6-905-cd/spp_node_zone_hub";
+const ENDPOINT = "/np6-905-cd/spp_node_zone_hub";
 
-// ---------------- Cache (in-memory) ----------------
+const SETTLEMENT_POINT = "HB_WEST";
+const INTERVALS_PER_DAY = 96;
+const HISTORY_WEEKS = 4;
+
+const RESPONSE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const DAY_ROWS_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// ---------------- In-memory cache ----------------
 type CacheEntry<T> = { value: T; expMs: number };
-const CACHE_TTL_MS = 10 * 60 * 1000;        // response cache
-const DAY_ROWS_TTL_MS = 60 * 60 * 1000;     // day rows cache (1 hour)
+
+declare global {
+  var __FORECAST_CACHE__: Map<string, CacheEntry<unknown>> | undefined;
+}
+
 
 function getCache() {
-  const g = globalThis as any;
-  if (!g.__FORECAST_CACHE__) g.__FORECAST_CACHE__ = new Map<string, CacheEntry<any>>();
-  return g.__FORECAST_CACHE__ as Map<string, CacheEntry<any>>;
+  if (!globalThis.__FORECAST_CACHE__) {
+    globalThis.__FORECAST_CACHE__ = new Map<string, CacheEntry<unknown>>();
+  }
+  return globalThis.__FORECAST_CACHE__;
 }
 
 function cacheGet<T>(key: string): T | null {
-  const cache = getCache();
-  const entry = cache.get(key);
+  const entry = getCache().get(key);
   if (!entry) return null;
   if (Date.now() > entry.expMs) {
-    cache.delete(key);
+    getCache().delete(key);
     return null;
   }
   return entry.value as T;
@@ -32,25 +42,12 @@ function cacheSet<T>(key: string, value: T, ttlMs: number) {
 }
 
 // ---------------- Date helpers ----------------
-function parseYmd(date: string) {
-  const [y, m, d] = date.split("-").map(Number);
+function parseYmd(s: string): Date | null {
+  const [y, m, d] = s.split("-").map(Number);
   if (!y || !m || !d) return null;
   const dt = new Date(y, m - 1, d);
   dt.setHours(0, 0, 0, 0);
   return dt;
-}
-
-function toStartOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-function addDays(d: Date, days: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + days);
-  x.setHours(0, 0, 0, 0);
-  return x;
 }
 
 function ymd(d: Date) {
@@ -60,59 +57,37 @@ function ymd(d: Date) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function addDays(d: Date, days: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
 function nextDayYmd(dateYmd: string) {
-  const dt = parseYmd(dateYmd);
-  if (!dt) throw new Error("Invalid date");
-  dt.setDate(dt.getDate() + 1);
-  return ymd(dt);
+  const d = parseYmd(dateYmd);
+  if (!d) throw new Error("Invalid date");
+  d.setDate(d.getDate() + 1);
+  return ymd(d);
 }
 
 // ---------------- ERCOT row parsing ----------------
-// Row format you found:
-// ["2026-02-10", 1, 1, "HB_WEST", "HU", -1.39, false]
-type Row = any[];
+// Discovered row format:
+// ["YYYY-MM-DD", <ignored>, interval, "HB_WEST", <ignored>, price, <ignored>]
+type Row = unknown[];
 
-function intervalToTime(interval: number) {
-  const zeroBased = interval - 1;
-  const minutes = zeroBased * 15;
+function intervalToIso(deliveryDate: string, interval: number) {
+  const [y, m, d] = deliveryDate.split("-").map(Number);
+  const zero = interval - 1;
+  const minutes = zero * 15;
   const hh = Math.floor(minutes / 60);
   const mm = minutes % 60;
-  return { hh, mm };
+  return new Date(y, m - 1, d, hh, mm, 0, 0).toISOString();
 }
 
-function buildIsoFromDateAndInterval(dateStr: string, interval: number) {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const { hh, mm } = intervalToTime(interval);
-  const dt = new Date(y, m - 1, d, hh, mm, 0, 0);
-  return dt.toISOString();
-}
+function rowsToDayPoints(rows: Row[], wantedDate: string) {
+  const pts: { ts: string; value: number; interval: number }[] = [];
 
-function parseRowsToPoints(rows: Row[], wantedDate: string) {
-  const points = rows
-    .map((r) => {
-      if (!Array.isArray(r) || r.length < 6) return null;
-
-      const deliveryDate = String(r[0] ?? "");
-      const interval = Number(r[2]);
-      const settlementPoint = String(r[3] ?? "").trim().toUpperCase();
-      const value = Number(r[5]);
-
-      if (deliveryDate !== wantedDate) return null;
-      if (!Number.isFinite(interval) || interval < 1 || interval > 96) return null;
-      if (settlementPoint !== "HB_WEST") return null;
-      if (!Number.isFinite(value)) return null;
-
-      const ts = buildIsoFromDateAndInterval(deliveryDate, interval);
-      return { ts, value, interval };
-    })
-    .filter(Boolean) as { ts: string; value: number; interval: number }[];
-
-  points.sort((a, b) => a.interval - b.interval);
-  return points;
-}
-
-function rowsToHistory(rows: Row[]) {
-  const out: { ts: Date; value: number }[] = [];
   for (const r of rows) {
     if (!Array.isArray(r) || r.length < 6) continue;
 
@@ -121,154 +96,170 @@ function rowsToHistory(rows: Row[]) {
     const sp = String(r[3] ?? "").trim().toUpperCase();
     const value = Number(r[5]);
 
-    if (!deliveryDate || sp !== "HB_WEST") continue;
-    if (!Number.isFinite(interval) || interval < 1 || interval > 96) continue;
+    if (deliveryDate !== wantedDate) continue;
+    if (sp !== SETTLEMENT_POINT) continue;
+    if (!Number.isFinite(interval) || interval < 1 || interval > INTERVALS_PER_DAY) continue;
     if (!Number.isFinite(value)) continue;
 
-    const tsIso = buildIsoFromDateAndInterval(deliveryDate, interval);
-    out.push({ ts: new Date(tsIso), value });
+    pts.push({ ts: intervalToIso(deliveryDate, interval), value, interval });
   }
+
+  pts.sort((a, b) => a.interval - b.interval);
+  return pts;
+}
+
+function rowsToHistory(rows: Row[]) {
+  const out: { ts: Date; value: number }[] = [];
+
+  for (const r of rows) {
+    if (!Array.isArray(r) || r.length < 6) continue;
+
+    const deliveryDate = String(r[0] ?? "");
+    const interval = Number(r[2]);
+    const sp = String(r[3] ?? "").trim().toUpperCase();
+    const value = Number(r[5]);
+
+    if (!deliveryDate) continue;
+    if (sp !== SETTLEMENT_POINT) continue;
+    if (!Number.isFinite(interval) || interval < 1 || interval > INTERVALS_PER_DAY) continue;
+    if (!Number.isFinite(value)) continue;
+
+    out.push({ ts: new Date(intervalToIso(deliveryDate, interval)), value });
+  }
+
   out.sort((a, b) => a.ts.getTime() - b.ts.getTime());
   return out;
 }
 
 // ---------------- ERCOT fetch helpers ----------------
+type ErcotResponseShape = {
+  items?: unknown[];
+  data?: unknown[];
+  _embedded?: {
+    data?: unknown[];
+    items?: unknown[];
+  };
+};
+
 async function fetchSppRows(fromDate: string, toDate: string) {
-  const raw = await ercotGetJson<any>(SPP_15MIN_ENDPOINT, {
-    settlementPoint: "HB_WEST",
+  const raw = await ercotGetJson<ErcotResponseShape>(ENDPOINT, {
+    settlementPoint: SETTLEMENT_POINT,
     deliveryDateFrom: fromDate,
     deliveryDateTo: toDate,
     deliveryIntervalFrom: "1",
-    deliveryIntervalTo: "96",
+    deliveryIntervalTo: String(INTERVALS_PER_DAY),
     DSTFlag: "false",
-    size: "2000", // per-day pulls; keep it tight
+    size: "2000",
   });
 
-  const items: Row[] =
-    raw?.items ?? raw?.data ?? raw?._embedded?.data ?? raw?._embedded?.items ?? [];
+  const rows =
+    raw.items ??
+    raw.data ??
+    raw._embedded?.data ??
+    raw._embedded?.items ??
+    [];
 
-  return items;
+  // Keep it as unknown[][]; parsers already validate shape.
+  return rows as Row[];
 }
 
 /**
- * Fetches a single day's rows. We set deliveryDateTo = next day
- * to avoid "from == to" range quirks.
+ * Fetches one day's rows using [date, nextDay) to avoid range quirks with from==to.
+ * Results are cached separately so date switching doesn't re-hit ERCOT.
  */
 async function fetchDayRows(dateYmd: string) {
-  const key = `rows:HB_WEST:${dateYmd}`;
+  const key = `rows:${SETTLEMENT_POINT}:${dateYmd}`;
   const cached = cacheGet<Row[]>(key);
   if (cached) return cached;
 
-  const to = nextDayYmd(dateYmd);
-  const rows = await fetchSppRows(dateYmd, to);
-
+  const rows = await fetchSppRows(dateYmd, nextDayYmd(dateYmd));
   cacheSet(key, rows, DAY_ROWS_TTL_MS);
   return rows;
 }
 
-function previousSameWeekdayDates(target: Date, count: number) {
-  // Returns [target-7, target-14, ...] length = count
-  const out: Date[] = [];
-  let d = new Date(target);
-  d = toStartOfDay(d);
-  for (let i = 0; i < count; i++) {
-    d = addDays(d, -7);
-    out.push(new Date(d));
-  }
-  return out;
+function previousSameWeekdays(target: Date, weeks: number) {
+  return Array.from({ length: weeks }, (_, i) => addDays(target, -(7 * (i + 1))));
 }
 
 // ---------------- Route ----------------
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const date = searchParams.get("date");
-  if (!date) return NextResponse.json({ error: "Missing date" }, { status: 400 });
+  const dateParam = searchParams.get("date");
 
-  const targetDayStart = parseYmd(date);
-  if (!targetDayStart) {
-    return NextResponse.json({ error: "Invalid date (use YYYY-MM-DD)" }, { status: 400 });
-  }
+  if (!dateParam) return NextResponse.json({ error: "Missing date" }, { status: 400 });
 
-  const today = toStartOfDay(new Date());
+  const targetDay = parseYmd(dateParam);
+  if (!targetDay) return NextResponse.json({ error: "Invalid date (use YYYY-MM-DD)" }, { status: 400 });
+
+  const today = addDays(new Date(), 0);
   const max = addDays(today, 7);
 
-  if (targetDayStart < today || targetDayStart > max) {
+  if (targetDay < today || targetDay > max) {
     return NextResponse.json({ error: "Date must be within the next 7 days" }, { status: 400 });
   }
 
-  const targetYmd = ymd(targetDayStart);
+  const targetYmd = ymd(targetDay);
+  const respKey = `forecast:v3:${SETTLEMENT_POINT}:${targetYmd}`;
 
-  // Response cache (per selected day)
-  const respCacheKey = `forecast_v3:${targetYmd}`;
-  const cachedResp = cacheGet<any>(respCacheKey);
-  if (cachedResp) {
-    return NextResponse.json(cachedResp, {
-      headers: { "Cache-Control": "public, max-age=60" },
-    });
+  const cached = cacheGet<unknown>(respKey);
+  if (cached) {
+    return NextResponse.json(cached, { headers: { "Cache-Control": "public, max-age=60" } });
   }
 
-  // Compare day = same weekday last week
-  const compareDay = addDays(targetDayStart, -7);
+  const compareDay = addDays(targetDay, -7);
   const compareYmd = ymd(compareDay);
 
   try {
-    // 1) Actuals for last week's same weekday (single-day fetch)
     const compareRows = await fetchDayRows(compareYmd);
-    const actualsCompare = parseRowsToPoints(compareRows, compareYmd);
+    const actualsPoints = rowsToDayPoints(compareRows, compareYmd);
 
-    // 2) History = last 4 occurrences of that weekday (same weekday seasonal baseline)
-    const histDays = previousSameWeekdayDates(targetDayStart, 4); // [target-7, -14, -21, -28]
-    const histRowsList = await Promise.all(histDays.map((d) => fetchDayRows(ymd(d))));
-    const historyAll = rowsToHistory(histRowsList.flat());
+    const historyDays = previousSameWeekdays(targetDay, HISTORY_WEEKS);
+    const historyRows = await Promise.all(historyDays.map((d) => fetchDayRows(ymd(d))));
+    const historyAll = rowsToHistory(historyRows.flat());
 
     if (historyAll.length === 0) {
-      return NextResponse.json({ error: "No HB_WEST history returned from ERCOT." }, { status: 502 });
+      return NextResponse.json(
+        { error: `No ${SETTLEMENT_POINT} history returned from ERCOT.` },
+        { status: 502 }
+      );
     }
 
-    // Forecast for selected day based on same-weekday seasonal baseline
-    const forecastPoints = buildSeasonalForecast(targetDayStart, historyAll, 4);
+    const forecastPoints = buildSeasonalForecast(targetDay, historyAll, HISTORY_WEEKS);
 
-    // Backtest: forecast compare day using history strictly before compare day
     const historyBeforeCompare = historyAll.filter((p) => p.ts < compareDay);
-    const forecastComparePoints = buildSeasonalForecast(compareDay, historyBeforeCompare, 4);
+    const forecastCompare = buildSeasonalForecast(compareDay, historyBeforeCompare, HISTORY_WEEKS);
 
     const forecastVals = forecastPoints.map((p) => p.value);
-    const actualVals = actualsCompare.map((p) => p.value);
-    const predValsForBacktest = forecastComparePoints.map((p) => p.value);
+    const actualVals = actualsPoints.map((p) => p.value);
+    const predVals = forecastCompare.map((p) => p.value);
 
     const resp = {
-      settlementPoint: "HB_WEST" as const,
+      settlementPoint: SETTLEMENT_POINT,
       date: targetYmd,
       dataMode: "ercot-np6-905",
-
       forecast: forecastPoints,
-
       actuals: {
         date: compareYmd,
-        points: actualsCompare,
+        points: actualsPoints,
       },
-
       stats: {
         forecast: dailyStats(forecastVals),
         actuals: dailyStats(actualVals),
       },
-
       backtest: {
         date: compareYmd,
-        mae: mae(actualVals, predValsForBacktest),
-        mape: mape(actualVals, predValsForBacktest),
+        mae: actualVals.length ? mae(actualVals, predVals) : NaN,
+        mape: actualVals.length ? mape(actualVals, predVals) : null,
         actualCount: actualVals.length,
       },
     };
 
-    cacheSet(respCacheKey, resp, CACHE_TTL_MS);
+    cacheSet(respKey, resp, RESPONSE_TTL_MS);
+    return NextResponse.json(resp, { headers: { "Cache-Control": "public, max-age=60" } });
+  } catch (e: unknown) {
+    const msg =
+      e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
 
-    return NextResponse.json(resp, {
-      headers: { "Cache-Control": "public, max-age=60" },
-    });
-  } catch (e: any) {
-    const msg = e?.message ?? String(e);
-    // If you added server-side timeout in ercotGetJson, surface that cleanly.
     const status = msg.toLowerCase().includes("timed out") ? 504 : 502;
     return NextResponse.json({ error: msg }, { status });
   }
