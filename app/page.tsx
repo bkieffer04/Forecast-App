@@ -205,7 +205,6 @@ export default function Page() {
   </div>
 </div>
 <div className="badgeColumn">
-  {loading && <span className="badge badgeLoading">Loading…</span>}
   {err && <span className="badge badgeError">{err}</span>}
   <span className="badge">Region: HB_WEST</span>
   {data?.dataMode && <span className="badge">Mode: {data.dataMode}</span>}
