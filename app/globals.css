@@ -1,5 +1,5 @@
 :root {
-  /* Dark, clean, energy-company vibe. Swap these with exact Jupiter hexes if you grab them in DevTools. */
+  /* Theme */
   --jp-bg: #0b0f14;
   --jp-surface: #121a22;
   --jp-surface-2: #0f1620;
@@ -8,8 +8,16 @@
   --jp-border: rgba(255, 255, 255, 0.12);
   --jp-accent: #f0c04a;
   --jp-danger: #ff4d4f;
+
+  /* Shared styles */
+  --jp-surface-grad: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.04),
+    transparent 40%
+  );
 }
 
+/* Base */
 html,
 body {
   height: 100%;
@@ -17,8 +25,7 @@ body {
 
 body {
   margin: 0;
-  background: 
-    var(--jp-bg);
+  background: var(--jp-bg);
   color: var(--jp-text);
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
@@ -39,14 +46,33 @@ a {
   align-items: center;
   justify-content: space-between;
   padding: 14px 0 18px;
-  border-bottom: 1px solid var(--jp-border);
   margin-bottom: 18px;
+  border-bottom: 1px solid var(--jp-border);
 }
 
+/* Branding */
 .brand {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brandText {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.brandTitle {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
 }
 
 .brandSubtitle {
@@ -65,25 +91,6 @@ a {
   color: var(--jp-muted);
   font-size: 14px;
   line-height: 1.4;
-}
-
-/* Header row (logo + title) */
-.brandRow {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.brandText {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.brandTitle {
-  font-size: 18px;
-  font-weight: 650;
-  letter-spacing: 0.2px;
 }
 
 /* Controls */
@@ -117,7 +124,7 @@ a {
   box-shadow: 0 0 0 3px rgba(240, 192, 74, 0.12);
 }
 
-/* Pills */
+/* Badges / Pills */
 .badge {
   font-size: 12px;
   padding: 4px 10px;
@@ -125,6 +132,7 @@ a {
   border: 1px solid var(--jp-border);
   background: rgba(255, 255, 255, 0.04);
   color: var(--jp-muted);
+  white-space: nowrap;
 }
 
 .badgeLoading {
@@ -138,13 +146,26 @@ a {
   background: rgba(255, 77, 79, 0.08);
 }
 
+.badgeColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 /* Surfaces */
-.surface {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 40%),
-    var(--jp-surface);
+.surface,
+.statCard {
+  background: var(--jp-surface-grad), var(--jp-surface);
   border: 1px solid var(--jp-border);
   border-radius: 14px;
+}
+
+.surface {
   padding: 10px;
+}
+
+.statCard {
+  padding: 12px;
 }
 
 .sectionTitle {
@@ -154,7 +175,7 @@ a {
   letter-spacing: 0.2px;
 }
 
-/* Stats grid */
+/* Stats */
 .statsGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -166,14 +187,6 @@ a {
   .statsGrid {
     grid-template-columns: 1fr;
   }
-}
-
-.statCard {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 40%),
-    var(--jp-surface);
-  border: 1px solid var(--jp-border);
-  border-radius: 14px;
-  padding: 12px;
 }
 
 .statLabel {
@@ -208,7 +221,7 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
-/* Chart wrapper */
+/* Chart */
 .chartSurface {
   margin-top: 10px;
 }
@@ -276,16 +289,7 @@ a {
   background: rgba(255, 255, 255, 0.03);
 }
 
-/* Footer */
-.footer {
-  margin-top: 28px;
-  padding-top: 16px;
-  border-top: 1px solid var(--jp-border);
-  color: var(--jp-muted);
-  font-size: 12px;
-  text-align: center;
-}
-
+/* Date bubbles */
 .dateRow {
   display: flex;
   flex-direction: column;
@@ -311,10 +315,12 @@ a {
   border-radius: 999px;
   padding: 10px 14px;
   min-width: 92px;
+
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
+
   transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 
@@ -326,6 +332,7 @@ a {
 .dateBubble:focus {
   outline: none;
   box-shadow: 0 0 0 3px rgba(240, 192, 74, 0.14);
+  border-color: rgba(240, 192, 74, 0.35);
 }
 
 .dateBubbleActive {
@@ -344,6 +351,7 @@ a {
   font-weight: 650;
 }
 
+/* Tooltips */
 .tip {
   position: relative;
   display: inline-flex;
@@ -357,9 +365,11 @@ a {
   justify-content: center;
   width: 16px;
   height: 16px;
+
   border-radius: 999px;
   border: 1px solid var(--jp-border);
   color: var(--jp-muted);
+
   font-size: 11px;
   line-height: 1;
   cursor: help;
@@ -378,20 +388,24 @@ a {
   top: 22px;
   width: 260px;
   max-width: 70vw;
-  padding: 10px 10px;
+
+  padding: 10px;
   border-radius: 12px;
   border: 1px solid var(--jp-border);
+
   background: var(--jp-surface-2);
   color: var(--jp-text);
+
   font-size: 12px;
   line-height: 1.35;
-  z-index: 50;
 
+  z-index: 50;
   opacity: 0;
   visibility: hidden;
   transform: translateY(-4px);
   transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
 .tip:hover .tipBubble,
@@ -401,11 +415,12 @@ a {
   transform: translateY(0);
 }
 
-.badgeColumn {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* Footer */
+.footer {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px solid var(--jp-border);
+  color: var(--jp-muted);
+  font-size: 12px;
+  text-align: center;
 }
-
-
-
