@@ -105,6 +105,7 @@ function isRetryableStatus(status: number) {
  *
  * Important: credentials are server-side only. Do not expose them to the client.
  */
+// src/lib/ercot.ts
 export async function ercotGetJson<T>(
   path: string,
   query: Record<string, string>
@@ -133,18 +134,23 @@ export async function ercotGetJson<T>(
         cache: "no-store",
       });
 
-      if (!resp.ok) {
-        const txt = redact(await resp.text());
+      const text = await resp.text(); // read once
 
+      if (!resp.ok) {
         if (isRetryableStatus(resp.status) && attempt < maxAttempts) {
           await sleep(300 * attempt);
           continue;
         }
-
-        throw new Error(`ERCOT API failed: ${resp.status} ${txt}`);
+        throw new Error(`ERCOT API failed: ${resp.status} ${redact(text)}`);
       }
 
-      return (await resp.json()) as T;
+      // parse once
+      const json = JSON.parse(text) as T;
+
+      // if you really want logging:
+      // console.log("ERCOT response sample", JSON.stringify(json).slice(0, 1200));
+
+      return json;
     } catch (e: unknown) {
       if (e instanceof DOMException && e.name === "AbortError") {
         if (attempt < maxAttempts) {

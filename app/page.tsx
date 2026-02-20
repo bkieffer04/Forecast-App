@@ -245,7 +245,7 @@ export default function Page() {
             />
 
             <StatCard
-              title="Actuals"
+              title="Last Week Actuals"
               hint={`${data.actuals.date} • ${data.backtest.actualCount} points`}
               rows={[
                 { label: "Min", value: fmt(data.stats.actuals.min) },

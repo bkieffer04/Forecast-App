@@ -1,37 +1,29 @@
-// app/api/forecast/route.ts
+// src/app/api/forecast/route.ts
 import { NextResponse } from "next/server";
 import { ercotGetJson } from "@/lib/ercot";
 import { buildSeasonalForecast, dailyStats, mae, mape } from "@/lib/forecast";
 
-const ENDPOINT = "/np6-905-cd/spp_node_zone_hub";
+const SPP_15MIN_ENDPOINT = "/np6-905-cd/spp_node_zone_hub";
 
-const SETTLEMENT_POINT = "HB_WEST";
-const INTERVALS_PER_DAY = 96;
-const HISTORY_WEEKS = 4;
+type Row = any[];
 
-const RESPONSE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const DAY_ROWS_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-// ---------------- In-memory cache ----------------
+// ---------------- Cache (in-memory) ----------------
 type CacheEntry<T> = { value: T; expMs: number };
-
-declare global {
-  var __FORECAST_CACHE__: Map<string, CacheEntry<unknown>> | undefined;
-}
-
+const CACHE_TTL_MS = 10 * 60 * 1000;     // response cache
+const DAY_ROWS_TTL_MS = 60 * 60 * 1000;  // raw day rows cache
 
 function getCache() {
-  if (!globalThis.__FORECAST_CACHE__) {
-    globalThis.__FORECAST_CACHE__ = new Map<string, CacheEntry<unknown>>();
-  }
-  return globalThis.__FORECAST_CACHE__;
+  const g = globalThis as any;
+  if (!g.__FORECAST_CACHE__) g.__FORECAST_CACHE__ = new Map<string, CacheEntry<any>>();
+  return g.__FORECAST_CACHE__ as Map<string, CacheEntry<any>>;
 }
 
 function cacheGet<T>(key: string): T | null {
-  const entry = getCache().get(key);
+  const cache = getCache();
+  const entry = cache.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expMs) {
-    getCache().delete(key);
+    cache.delete(key);
     return null;
   }
   return entry.value as T;
@@ -42,19 +34,18 @@ function cacheSet<T>(key: string, value: T, ttlMs: number) {
 }
 
 // ---------------- Date helpers ----------------
-function parseYmd(s: string): Date | null {
-  const [y, m, d] = s.split("-").map(Number);
+function parseYmd(date: string) {
+  const [y, m, d] = date.split("-").map(Number);
   if (!y || !m || !d) return null;
   const dt = new Date(y, m - 1, d);
   dt.setHours(0, 0, 0, 0);
   return dt;
 }
 
-function ymd(d: Date) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+function toStartOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
 }
 
 function addDays(d: Date, days: number) {
@@ -64,48 +55,78 @@ function addDays(d: Date, days: number) {
   return x;
 }
 
+function ymd(d: Date) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 function nextDayYmd(dateYmd: string) {
-  const d = parseYmd(dateYmd);
-  if (!d) throw new Error("Invalid date");
-  d.setDate(d.getDate() + 1);
-  return ymd(d);
+  const dt = parseYmd(dateYmd);
+  if (!dt) throw new Error("Invalid date");
+  dt.setDate(dt.getDate() + 1);
+  return ymd(dt);
 }
 
 // ---------------- ERCOT row parsing ----------------
-// Discovered row format:
-// ["YYYY-MM-DD", <ignored>, interval, "HB_WEST", <ignored>, price, <ignored>]
-type Row = unknown[];
-
-function intervalToIso(deliveryDate: string, interval: number) {
-  const [y, m, d] = deliveryDate.split("-").map(Number);
-  const zero = interval - 1;
-  const minutes = zero * 15;
-  const hh = Math.floor(minutes / 60);
-  const mm = minutes % 60;
-  return new Date(y, m - 1, d, hh, mm, 0, 0).toISOString();
+// Observed row format:
+// [ deliveryDate, hourEnding(1..24), intervalWithinHour(1..4), settlementPoint, zone, value, dstFlag ]
+function slotFromHourQuarter(hourEnding: number, quarter: number) {
+  // 0..95
+  return (hourEnding - 1) * 4 + (quarter - 1);
 }
 
-function rowsToDayPoints(rows: Row[], wantedDate: string) {
-  const pts: { ts: string; value: number; interval: number }[] = [];
+function isoFromDateSlot(dateStr: string, slot: number) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(y, m - 1, d, 0, 0, 0, 0);
+  dt.setMinutes(slot * 15);
+  return dt.toISOString();
+}
 
-  for (const r of rows) {
-    if (!Array.isArray(r) || r.length < 6) continue;
+function buildIsoFromDateHourInterval(dateStr: string, deliveryHour: number, deliveryInterval: number) {
+  const [y, m, d] = dateStr.split("-").map(Number);
 
-    const deliveryDate = String(r[0] ?? "");
-    const interval = Number(r[2]);
-    const sp = String(r[3] ?? "").trim().toUpperCase();
-    const value = Number(r[5]);
+  // ERCOT deliveryHour is Hour Ending (HE). Hour start is HE - 1.
+  const hourStart = deliveryHour - 1;
+  const minute = (deliveryInterval - 1) * 15;
 
-    if (deliveryDate !== wantedDate) continue;
-    if (sp !== SETTLEMENT_POINT) continue;
-    if (!Number.isFinite(interval) || interval < 1 || interval > INTERVALS_PER_DAY) continue;
-    if (!Number.isFinite(value)) continue;
+  const dt = new Date(y, m - 1, d, hourStart, minute, 0, 0);
+  return dt.toISOString();
+}
 
-    pts.push({ ts: intervalToIso(deliveryDate, interval), value, interval });
-  }
+function daySlot96(deliveryHour: number, deliveryInterval: number) {
+  // 0..95
+  return (deliveryHour - 1) * 4 + (deliveryInterval - 1);
+}
 
-  pts.sort((a, b) => a.interval - b.interval);
-  return pts;
+function parseRowsToPoints(rows: Row[], wantedDate: string) {
+  const points = rows
+    .map((r) => {
+      if (!Array.isArray(r) || r.length < 6) return null;
+
+      const deliveryDate = String(r[0] ?? "");
+      const deliveryHour = Number(r[1]);
+      const deliveryInterval = Number(r[2]);
+      const settlementPoint = String(r[3] ?? "").trim().toUpperCase();
+      const value = Number(r[5]);
+
+      if (deliveryDate !== wantedDate) return null;
+      if (!Number.isFinite(deliveryHour) || deliveryHour < 1 || deliveryHour > 24) return null;
+      if (!Number.isFinite(deliveryInterval) || deliveryInterval < 1 || deliveryInterval > 4) return null;
+      if (settlementPoint !== "HB_WEST") return null;
+      if (!Number.isFinite(value)) return null;
+
+      const ts = buildIsoFromDateHourInterval(deliveryDate, deliveryHour, deliveryInterval);
+      const slot = daySlot96(deliveryHour, deliveryInterval); // 0..95
+      return { ts, value, slot };
+    })
+    .filter(Boolean) as { ts: string; value: number; slot: number }[];
+
+  points.sort((a, b) => a.slot - b.slot);
+
+  // If your frontend expects `interval: 1..96`, you can return interval = slot + 1
+  return points.map((p) => ({ ts: p.ts, value: p.value, interval: p.slot + 1 }));
 }
 
 function rowsToHistory(rows: Row[]) {
@@ -115,16 +136,18 @@ function rowsToHistory(rows: Row[]) {
     if (!Array.isArray(r) || r.length < 6) continue;
 
     const deliveryDate = String(r[0] ?? "");
-    const interval = Number(r[2]);
+    const deliveryHour = Number(r[1]);
+    const deliveryInterval = Number(r[2]);
     const sp = String(r[3] ?? "").trim().toUpperCase();
     const value = Number(r[5]);
 
-    if (!deliveryDate) continue;
-    if (sp !== SETTLEMENT_POINT) continue;
-    if (!Number.isFinite(interval) || interval < 1 || interval > INTERVALS_PER_DAY) continue;
+    if (!deliveryDate || sp !== "HB_WEST") continue;
+    if (!Number.isFinite(deliveryHour) || deliveryHour < 1 || deliveryHour > 24) continue;
+    if (!Number.isFinite(deliveryInterval) || deliveryInterval < 1 || deliveryInterval > 4) continue;
     if (!Number.isFinite(value)) continue;
 
-    out.push({ ts: new Date(intervalToIso(deliveryDate, interval)), value });
+    const tsIso = buildIsoFromDateHourInterval(deliveryDate, deliveryHour, deliveryInterval);
+    out.push({ ts: new Date(tsIso), value });
   }
 
   out.sort((a, b) => a.ts.getTime() - b.ts.getTime());
@@ -132,134 +155,130 @@ function rowsToHistory(rows: Row[]) {
 }
 
 // ---------------- ERCOT fetch helpers ----------------
-type ErcotResponseShape = {
-  items?: unknown[];
-  data?: unknown[];
-  _embedded?: {
-    data?: unknown[];
-    items?: unknown[];
-  };
-};
-
 async function fetchSppRows(fromDate: string, toDate: string) {
-  const raw = await ercotGetJson<ErcotResponseShape>(ENDPOINT, {
-    settlementPoint: SETTLEMENT_POINT,
+  const raw = await ercotGetJson<any>(SPP_15MIN_ENDPOINT, {
+    settlementPoint: "HB_WEST",
     deliveryDateFrom: fromDate,
     deliveryDateTo: toDate,
+    // Keep whatever query params you already proved work.
+    // The API returns hourEnding + quarter anyway; parsing handles it.
     deliveryIntervalFrom: "1",
-    deliveryIntervalTo: String(INTERVALS_PER_DAY),
+    deliveryIntervalTo: "96",
     DSTFlag: "false",
     size: "2000",
   });
+  console.log('raw', raw);
+  const items: Row[] =
+    raw?.items ?? raw?.data ?? raw?._embedded?.data ?? raw?._embedded?.items ?? [];
 
-  const rows =
-    raw.items ??
-    raw.data ??
-    raw._embedded?.data ??
-    raw._embedded?.items ??
-    [];
-
-  // Keep it as unknown[][]; parsers already validate shape.
-  return rows as Row[];
+  return items;
 }
 
-/**
- * Fetches one day's rows using [date, nextDay) to avoid range quirks with from==to.
- * Results are cached separately so date switching doesn't re-hit ERCOT.
- */
 async function fetchDayRows(dateYmd: string) {
-  const key = `rows:${SETTLEMENT_POINT}:${dateYmd}`;
+  const key = `rows:HB_WEST:${dateYmd}`;
   const cached = cacheGet<Row[]>(key);
   if (cached) return cached;
 
-  const rows = await fetchSppRows(dateYmd, nextDayYmd(dateYmd));
+  const to = nextDayYmd(dateYmd);
+  const rows = await fetchSppRows(dateYmd, to);
+
   cacheSet(key, rows, DAY_ROWS_TTL_MS);
   return rows;
 }
 
-function previousSameWeekdays(target: Date, weeks: number) {
-  return Array.from({ length: weeks }, (_, i) => addDays(target, -(7 * (i + 1))));
+function previousSameWeekdayDates(target: Date, count: number) {
+  const out: Date[] = [];
+  let d = toStartOfDay(target);
+  for (let i = 0; i < count; i++) {
+    d = addDays(d, -7);
+    out.push(new Date(d));
+  }
+  return out;
 }
 
 // ---------------- Route ----------------
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const dateParam = searchParams.get("date");
+  const date = searchParams.get("date");
+  if (!date) return NextResponse.json({ error: "Missing date" }, { status: 400 });
 
-  if (!dateParam) return NextResponse.json({ error: "Missing date" }, { status: 400 });
+  const targetDayStart = parseYmd(date);
+  if (!targetDayStart) {
+    return NextResponse.json({ error: "Invalid date (use YYYY-MM-DD)" }, { status: 400 });
+  }
 
-  const targetDay = parseYmd(dateParam);
-  if (!targetDay) return NextResponse.json({ error: "Invalid date (use YYYY-MM-DD)" }, { status: 400 });
-
-  const today = addDays(new Date(), 0);
+  const today = toStartOfDay(new Date());
   const max = addDays(today, 7);
-
-  if (targetDay < today || targetDay > max) {
+  if (targetDayStart < today || targetDayStart > max) {
     return NextResponse.json({ error: "Date must be within the next 7 days" }, { status: 400 });
   }
 
-  const targetYmd = ymd(targetDay);
-  const respKey = `forecast:v3:${SETTLEMENT_POINT}:${targetYmd}`;
+  const targetYmd = ymd(targetDayStart);
 
-  const cached = cacheGet<unknown>(respKey);
-  if (cached) {
-    return NextResponse.json(cached, { headers: { "Cache-Control": "public, max-age=60" } });
+  const respCacheKey = `forecast_v4:${targetYmd}`;
+  const cachedResp = cacheGet<any>(respCacheKey);
+  if (cachedResp) {
+    return NextResponse.json(cachedResp, {
+      headers: { "Cache-Control": "public, max-age=60" },
+    });
   }
 
-  const compareDay = addDays(targetDay, -7);
+  const compareDay = addDays(targetDayStart, -7);
   const compareYmd = ymd(compareDay);
 
   try {
+    // Actuals: same weekday last week
     const compareRows = await fetchDayRows(compareYmd);
-    const actualsPoints = rowsToDayPoints(compareRows, compareYmd);
+    const actualsCompare = parseRowsToPoints(compareRows, compareYmd);
 
-    const historyDays = previousSameWeekdays(targetDay, HISTORY_WEEKS);
-    const historyRows = await Promise.all(historyDays.map((d) => fetchDayRows(ymd(d))));
-    const historyAll = rowsToHistory(historyRows.flat());
+    // History: last 4 same-weekday occurrences
+    const histDays = previousSameWeekdayDates(targetDayStart, 4);
+    const histRowsList = await Promise.all(histDays.map((d) => fetchDayRows(ymd(d))));
+    const historyAll = rowsToHistory(histRowsList.flat());
 
     if (historyAll.length === 0) {
-      return NextResponse.json(
-        { error: `No ${SETTLEMENT_POINT} history returned from ERCOT.` },
-        { status: 502 }
-      );
+      return NextResponse.json({ error: "No HB_WEST history returned from ERCOT." }, { status: 502 });
     }
 
-    const forecastPoints = buildSeasonalForecast(targetDay, historyAll, HISTORY_WEEKS);
+    const forecastPoints = buildSeasonalForecast(targetDayStart, historyAll, 4);
 
+    // Backtest: predict compare day using history strictly before compare day
     const historyBeforeCompare = historyAll.filter((p) => p.ts < compareDay);
-    const forecastCompare = buildSeasonalForecast(compareDay, historyBeforeCompare, HISTORY_WEEKS);
+    const forecastComparePoints = buildSeasonalForecast(compareDay, historyBeforeCompare, 4);
 
     const forecastVals = forecastPoints.map((p) => p.value);
-    const actualVals = actualsPoints.map((p) => p.value);
-    const predVals = forecastCompare.map((p) => p.value);
+    const actualVals = actualsCompare.map((p) => p.value);
+    const predValsForBacktest = forecastComparePoints.map((p) => p.value);
 
     const resp = {
-      settlementPoint: SETTLEMENT_POINT,
+      settlementPoint: "HB_WEST" as const,
       date: targetYmd,
       dataMode: "ercot-np6-905",
+
       forecast: forecastPoints,
-      actuals: {
-        date: compareYmd,
-        points: actualsPoints,
-      },
+
+      actuals: { date: compareYmd, points: actualsCompare },
+
       stats: {
         forecast: dailyStats(forecastVals),
         actuals: dailyStats(actualVals),
       },
+
       backtest: {
         date: compareYmd,
-        mae: actualVals.length ? mae(actualVals, predVals) : NaN,
-        mape: actualVals.length ? mape(actualVals, predVals) : null,
+        mae: mae(actualVals, predValsForBacktest),
+        mape: mape(actualVals, predValsForBacktest),
         actualCount: actualVals.length,
       },
     };
 
-    cacheSet(respKey, resp, RESPONSE_TTL_MS);
-    return NextResponse.json(resp, { headers: { "Cache-Control": "public, max-age=60" } });
-  } catch (e: unknown) {
-    const msg =
-      e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
+    cacheSet(respCacheKey, resp, CACHE_TTL_MS);
 
+    return NextResponse.json(resp, {
+      headers: { "Cache-Control": "public, max-age=60" },
+    });
+  } catch (e: any) {
+    const msg = e?.message ?? String(e);
     const status = msg.toLowerCase().includes("timed out") ? 504 : 502;
     return NextResponse.json({ error: msg }, { status });
   }
