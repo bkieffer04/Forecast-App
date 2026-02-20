@@ -5,17 +5,47 @@ import { buildSeasonalForecast, dailyStats, mae, mape } from "@/lib/forecast";
 
 const SPP_15MIN_ENDPOINT = "/np6-905-cd/spp_node_zone_hub";
 
-type Row = any[];
+// ---------------- Types ----------------
+
+// The ERCOT endpoint returns "rows" (arrays). We only rely on indices 0,1,2,3,5.
+// This tuple type matches that shape without pretending we know every column.
+type Row = [
+  deliveryDate: string, // r[0]
+  deliveryHour: number, // r[1]
+  deliveryInterval: number, // r[2]
+  settlementPoint: string, // r[3]
+  col4?: unknown, // r[4] (unused)
+  value?: number, // r[5]
+  ...rest: unknown[]
+];
+
+type Embedded = {
+  data?: Row[];
+  items?: Row[];
+};
+
+// ERCOT responses vary. We accept a few known shapes and treat everything else as unknown.
+type UnknownErcotResponse = {
+  items?: Row[];
+  data?: Row[];
+  _embedded?: Embedded;
+  [key: string]: unknown;
+};
+
+type Point = { ts: string; value: number; interval: number };
+type HistoryPoint = { ts: Date; value: number };
 
 // ---------------- Cache (in-memory) ----------------
 type CacheEntry<T> = { value: T; expMs: number };
-const CACHE_TTL_MS = 10 * 60 * 1000;     // response cache
-const DAY_ROWS_TTL_MS = 60 * 60 * 1000;  // raw day rows cache
+const CACHE_TTL_MS = 10 * 60 * 1000; // response cache
+const DAY_ROWS_TTL_MS = 60 * 60 * 1000; // raw day rows cache
 
-function getCache() {
-  const g = globalThis as any;
-  if (!g.__FORECAST_CACHE__) g.__FORECAST_CACHE__ = new Map<string, CacheEntry<any>>();
-  return g.__FORECAST_CACHE__ as Map<string, CacheEntry<any>>;
+type ForecastCache = Map<string, CacheEntry<unknown>>;
+
+function getCache(): ForecastCache {
+  const g = globalThis as typeof globalThis & { __FORECAST_CACHE__?: ForecastCache };
+  if (!g.__FORECAST_CACHE__) g.__FORECAST_CACHE__ = new Map<string, CacheEntry<unknown>>();
+  return g.__FORECAST_CACHE__;
 }
 
 function cacheGet<T>(key: string): T | null {
@@ -30,7 +60,7 @@ function cacheGet<T>(key: string): T | null {
 }
 
 function cacheSet<T>(key: string, value: T, ttlMs: number) {
-  getCache().set(key, { value, expMs: Date.now() + ttlMs });
+  getCache().set(key, { value: value as unknown, expMs: Date.now() + ttlMs });
 }
 
 // ---------------- Date helpers ----------------
@@ -69,21 +99,6 @@ function nextDayYmd(dateYmd: string) {
   return ymd(dt);
 }
 
-// ---------------- ERCOT row parsing ----------------
-// Observed row format:
-// [ deliveryDate, hourEnding(1..24), intervalWithinHour(1..4), settlementPoint, zone, value, dstFlag ]
-function slotFromHourQuarter(hourEnding: number, quarter: number) {
-  // 0..95
-  return (hourEnding - 1) * 4 + (quarter - 1);
-}
-
-function isoFromDateSlot(dateStr: string, slot: number) {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const dt = new Date(y, m - 1, d, 0, 0, 0, 0);
-  dt.setMinutes(slot * 15);
-  return dt.toISOString();
-}
-
 function buildIsoFromDateHourInterval(dateStr: string, deliveryHour: number, deliveryInterval: number) {
   const [y, m, d] = dateStr.split("-").map(Number);
 
@@ -100,11 +115,10 @@ function daySlot96(deliveryHour: number, deliveryInterval: number) {
   return (deliveryHour - 1) * 4 + (deliveryInterval - 1);
 }
 
-function parseRowsToPoints(rows: Row[], wantedDate: string) {
+function parseRowsToPoints(rows: Row[], wantedDate: string): Point[] {
   const points = rows
     .map((r) => {
-      if (!Array.isArray(r) || r.length < 6) return null;
-
+      // Tuple guarantees at least 4 items, but value may be missing.
       const deliveryDate = String(r[0] ?? "");
       const deliveryHour = Number(r[1]);
       const deliveryInterval = Number(r[2]);
@@ -121,20 +135,18 @@ function parseRowsToPoints(rows: Row[], wantedDate: string) {
       const slot = daySlot96(deliveryHour, deliveryInterval); // 0..95
       return { ts, value, slot };
     })
-    .filter(Boolean) as { ts: string; value: number; slot: number }[];
+    .filter((x): x is { ts: string; value: number; slot: number } => x !== null);
 
   points.sort((a, b) => a.slot - b.slot);
 
-  // If your frontend expects `interval: 1..96`, you can return interval = slot + 1
+  // If your frontend expects `interval: 1..96`, return interval = slot + 1
   return points.map((p) => ({ ts: p.ts, value: p.value, interval: p.slot + 1 }));
 }
 
-function rowsToHistory(rows: Row[]) {
-  const out: { ts: Date; value: number }[] = [];
+function rowsToHistory(rows: Row[]): HistoryPoint[] {
+  const out: HistoryPoint[] = [];
 
   for (const r of rows) {
-    if (!Array.isArray(r) || r.length < 6) continue;
-
     const deliveryDate = String(r[0] ?? "");
     const deliveryHour = Number(r[1]);
     const deliveryInterval = Number(r[2]);
@@ -155,8 +167,20 @@ function rowsToHistory(rows: Row[]) {
 }
 
 // ---------------- ERCOT fetch helpers ----------------
-async function fetchSppRows(fromDate: string, toDate: string) {
-  const raw = await ercotGetJson<any>(SPP_15MIN_ENDPOINT, {
+function extractRows(raw: UnknownErcotResponse): Row[] {
+  // Grab the first array we recognize, otherwise empty.
+  const rows =
+    raw.items ??
+    raw.data ??
+    raw._embedded?.data ??
+    raw._embedded?.items ??
+    [];
+
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function fetchSppRows(fromDate: string, toDate: string): Promise<Row[]> {
+  const raw = await ercotGetJson<UnknownErcotResponse>(SPP_15MIN_ENDPOINT, {
     settlementPoint: "HB_WEST",
     deliveryDateFrom: fromDate,
     deliveryDateTo: toDate,
@@ -167,14 +191,12 @@ async function fetchSppRows(fromDate: string, toDate: string) {
     DSTFlag: "false",
     size: "2000",
   });
-  console.log('raw', raw);
-  const items: Row[] =
-    raw?.items ?? raw?.data ?? raw?._embedded?.data ?? raw?._embedded?.items ?? [];
 
-  return items;
+  console.log("raw", raw);
+  return extractRows(raw);
 }
 
-async function fetchDayRows(dateYmd: string) {
+async function fetchDayRows(dateYmd: string): Promise<Row[]> {
   const key = `rows:HB_WEST:${dateYmd}`;
   const cached = cacheGet<Row[]>(key);
   if (cached) return cached;
@@ -216,7 +238,7 @@ export async function GET(req: Request) {
   const targetYmd = ymd(targetDayStart);
 
   const respCacheKey = `forecast_v4:${targetYmd}`;
-  const cachedResp = cacheGet<any>(respCacheKey);
+  const cachedResp = cacheGet<unknown>(respCacheKey);
   if (cachedResp) {
     return NextResponse.json(cachedResp, {
       headers: { "Cache-Control": "public, max-age=60" },
@@ -277,8 +299,8 @@ export async function GET(req: Request) {
     return NextResponse.json(resp, {
       headers: { "Cache-Control": "public, max-age=60" },
     });
-  } catch (e: any) {
-    const msg = e?.message ?? String(e);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
     const status = msg.toLowerCase().includes("timed out") ? 504 : 502;
     return NextResponse.json({ error: msg }, { status });
   }
